@@ -3,8 +3,10 @@
 namespace Kolirt\Frontpad;
 
 use GuzzleHttp\Client;
-use GuzzleHttp\Psr7\Response;
+use GuzzleHttp\Exception\RequestException;
+use GuzzleHttp\Exception\TransferException;
 use Illuminate\Support\Facades\Cache;
+use Psr\Http\Message\ResponseInterface;
 
 class Frontpad
 {
@@ -138,13 +140,13 @@ class Frontpad
         });
     }
 
-    private function prepareResponse(Response $response)
+    private function prepareResponse(ResponseInterface $response)
     {
-        $data = $response->getBody()->getContents();
+        $data = (string)$response->getBody();
         $data = is_json($data) ? json_decode($data) : $data;
 
         return (object)[
-            'ok'          => $data->result === 'success',
+            'ok'          => is_object($data) && isset($data->result) && $data->result === 'success',
             'status_code' => $response->getStatusCode(),
             'response'   => $response,
             'data'        => $data
@@ -155,10 +157,40 @@ class Frontpad
     {
         try {
             return $function();
-        } catch (\Exception $exception) {
-            $response = $exception->getResponse();
+        } catch (TransferException $exception) {
+            $response = $this->responseFrom($exception);
+
+            if ($response === null) {
+                throw $exception;
+            }
+
             return $this->prepareResponse($response);
         }
+    }
+
+    /**
+     * Достаёт ответ из исключения Guzzle, если он там вообще есть.
+     *
+     * ConnectException в Guzzle 7 унаследован от TransferException и метода
+     * getResponse() не имеет, а ResponseException из Guzzle 8 не является
+     * RequestException — поэтому проверяем, а не предполагаем.
+     *
+     * @param \Throwable $exception
+     * @return \Psr\Http\Message\ResponseInterface|null
+     */
+    private function responseFrom($exception)
+    {
+        if ($exception instanceof RequestException) {
+            return $exception->hasResponse() ? $exception->getResponse() : null;
+        }
+
+        if (method_exists($exception, 'getResponse')) {
+            $response = $exception->getResponse();
+
+            return $response instanceof ResponseInterface ? $response : null;
+        }
+
+        return null;
     }
 
     public function getProxy()
